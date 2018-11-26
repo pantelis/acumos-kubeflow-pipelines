@@ -1,0 +1,108 @@
+= Tensorflow Training Jobs using Kubeflow and Argo
+
+== Deployment without ksonnet
+The steps that are involved are:
+
+=== Kubernetes 
+We cteate a C-plane together with 2 workers in AWS, using:
+
+```
+eksctl create cluster eks-kubeflow --node-type=p3.2xlarge --nodes 2 --region us-east-1 --timeout=40m
+```
+
+This command also provisions an EBS volume for storage of the model. 
+For other than AWS environments, please provision the master and the 2 workers as well as the volume using `kubectl`. For example to provision the volume:
+
+```
+cat <<EOF | kubectl create -f -
+kind: StorageClass
+apiVersion: storage.k8s.io/v1
+metadata:
+  name: gp2
+  annotations:
+    storageclass.beta.kubernetes.io/is-default-class: "true"
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp2
+reclaimPolicy: Delete
+mountOptions:
+  - debug
+EOF
+```
+
+The step is successful if you can see the GPUs when the following commands returns (please adapt for your environment)
+
+```
+kubectl get nodes \
+ "-o=custom-columns=NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,EC2:.metadata.labels.beta\.kubernetes\.io/instance-type,AZ:.metadata.labels.failure-domain\.beta\.kubernetes\.io/zone
+```
+
+=== Kubeflow installation
+We follow the Kubeflow getting started guide: https://www.kubeflow.org/docs/started/getting-started/
+
+```
+export KUBEFLOW_TAG=v0.3.3
+curl https://raw.githubusercontent.com/kubeflow/kubeflow/v0.3.3/scripts/download.sh | bash
+```
+You will see the `kubeflow` and `scripts` directories created. 
+
+Then we decide the directory where we store all our apps as well as the name of the AI app that we would like to use - in our casde its `kf-eks-basic`. Change into the apps directory  and issue the following command:
+
+```
+~/projects/devops/kf/scripts/kfctl.sh init kf-eks-basic --platform none
+```
+
+The new app directory`kf-eks-basic` will be created and it will contain an `env.sh` file that stores environment variables:
+
+```
+PLATFORM=none
+KUBEFLOW_REPO=/Users/pantelis/projects/devops/kf
+KUBEFLOW_VERSION=master
+KUBEFLOW_KS_DIR=/Users/pantelis/projects/devops/aws/kubeflow-eks-apps/kf-eks-basic/ks_app
+KUBEFLOW_DOCKER_REGISTRY=
+K8S_NAMESPACE=kubeflow
+KUBEFLOW_CLOUD=null
+```
+Then the generate command, creates the necessary for this deployment packages
+
+```
+~/projects/devops/kf/scripts/kfctl.sh generate k8s
+```
+The subsequent apply command will deploy the components into pods in our kubernetes cluster. 
+
+```
+~/projects/devops/kf/scripts/kfctl.sh apply k8s
+```
+We can check the deployment status by:
+```
+kubectl get pods --all-namespaces
+NAMESPACE     NAME                                                      READY   STATUS              RESTARTS   AGE
+kube-system   aws-node-4czsl                                            1/1     Running             1          3h
+kube-system   aws-node-drxsv                                            1/1     Running             1          3h
+kube-system   kube-dns-64b69465b4-4s4v2                                 3/3     Running             0          3h
+kube-system   kube-proxy-4jsxj                                          1/1     Running             0          3h
+kube-system   kube-proxy-9c7tm                                          1/1     Running             0          3h
+kubeflow      ambassador-7fb86f6bc5-6nbm7                               3/3     Running             0          1m
+kubeflow      ambassador-7fb86f6bc5-9s5zw                               3/3     Running             0          1m
+kubeflow      ambassador-7fb86f6bc5-h7vsw                               3/3     Running             0          1m
+kubeflow      argo-ui-7b6585d85d-22s8t                                  1/1     Running             0          51s
+kubeflow      centraldashboard-f8d7d97fb-757v7                          1/1     Running             0          1m
+kubeflow      modeldb-backend-69dfc464df-rn7d6                          0/1     ContainerCreating   0          42s
+kubeflow      modeldb-db-6cf5bb764-jxlth                                1/1     Running             0          42s
+kubeflow      modeldb-frontend-74b66f8dc8-w24sj                         1/1     Running             0          43s
+kubeflow      spartakus-volunteer-964c548b4-6p9qn                       0/1     ContainerCreating   0          36s
+kubeflow      studyjob-controller-68f5948984-jbl79                      0/1     ContainerCreating   0          41s
+kubeflow      tf-hub-0                                                  1/1     Running             0          1m
+kubeflow      tf-job-dashboard-7cddcdf9c4-4ppzf                         1/1     Running             0          58s
+kubeflow      tf-job-operator-v1alpha2-6566f45db-h5pjh                  1/1     Running             0          58s
+kubeflow      vizier-core-d74cbfd98-s4nv4                               0/1     ContainerCreating   0          41s
+kubeflow      vizier-db-cc59bc8bd-7g5cx                                 0/1     ContainerCreating   0          41s
+kubeflow      vizier-suggestion-bayesianoptimization-788df66688-czfhw   0/1     ContainerCreating   0          42s
+kubeflow      vizier-suggestion-grid-76c648b78-hzn4q                    0/1     ContainerCreating   0          42s
+kubeflow      vizier-suggestion-hyperband-5df8cf7bc8-s24pp              0/1     ContainerCreating   0          41s
+kubeflow      vizier-suggestion-random-65b9fd7c48-pckc8                 1/1     Running             0          42s
+kubeflow      workflow-controller-59c7967f59-kjklr                      1/1     Running             0          5
+
+```
+
+
