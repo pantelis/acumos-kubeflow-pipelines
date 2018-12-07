@@ -55,7 +55,7 @@ mapUsers: |
 ....
 
 
-===Storage Class Provision
+=== Storage Class Provision
 NOTE: For other than AWS environments, please provision the master and the 2 workers as well as the volume using `kubectl`. For example to provision the volume:
 
 ....
