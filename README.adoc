@@ -1,19 +1,64 @@
 = Tensorflow Training Jobs using Kubeflow and Argo
 
-== Deployment without ksonnet
-The steps that are involved are:
+Make sure that your AWS CLI is working and you can successfully execute e.g. 
 
-=== Kubernetes 
+....
+aws s3 ls
+....
+
+== Kubernetes Installation 
+
+=== Cluster with V100 GPUs
 We cteate a C-plane together with 2 workers in AWS, using:
 
-```
-eksctl create cluster eks-kubeflow --node-type=p3.2xlarge --nodes 2 --region us-east-1 --timeout=40m
-```
+....
+eksctl create cluster eks-kubeflow --node-type=p3.2xlarge --nodes 2 --region us-east-1 --timeout=40m --auto-kubeconfig --ssh-access --ssh-public-key=key.pub
+
+eksctl create cluster eks-kubeflow --node-type=g3s.xlarge --nodes 2 --region us-east-1 --timeout=40m --auto-kubeconfig --ssh-access --ssh-public-key=key.pub
+....
+
+The first command will launch very expensive (currently 3.5$/h) V100 GPUs available in P3 instances while the second will launch inexpensive (.75$/h) M60 GPU available in G3 instances.
+
+=== Cluster without CPU only
+
+....
+eksctl create cluster acumos-eks --node-type=m5.2xlarge --nodes 2 --region us-east-1 --timeout=40m --auto-kubeconfig --ssh-access --ssh-public-key=key.pub
+....
+
+After 10-15 mins the cluster will be up. You need to set the env variable
+
+....
+export KUBECONFIG=$KUBECONFG:/Users/pantelis/.kube/eksctl/clusters/eks-kubeflow
+....
 
 This command also provisions an EBS volume for storage of the model. 
-For other than AWS environments, please provision the master and the 2 workers as well as the volume using `kubectl`. For example to provision the volume:
 
-```
+The kubectl must be configured for AWS following https://docs.aws.amazon.com/eks/latest/userguide/configure-kubectl.html. 
+We also need to Download, edit, and apply the AWS authenticator configuration map.
+
+Download the configuration map:
+
+`curl -O https://amazon-eks.s3-us-west-2.amazonaws.com/1.10.3/2018-07-26/aws-auth-cm.yaml`
+
+and edit the file replacing the mapRoles section with the mapUsers section:
+
+....
+mapUsers: |
+    - userarn: arn:aws:iam::555555555555:user/admin
+      username: admin
+      groups:
+        - system:masters
+    - userarn: arn:aws:iam::111122223333:user/ops-user
+      username: ops-user
+      groups:
+        - system:masters
+....
+
+
+===Storage Class Provision
+NOTE: For other than AWS environments, please provision the master and the 2 workers as well as the volume using `kubectl`. For example to provision the volume:
+
+....
 cat <<EOF | kubectl create -f -
 kind: StorageClass
 apiVersion: storage.k8s.io/v1
@@ -28,33 +73,48 @@ reclaimPolicy: Delete
 mountOptions:
   - debug
 EOF
-```
+....
 
-The step is successful if you can see the GPUs when the following commands returns (please adapt for your environment)
+You can test is the PV is provisioned.
 
-```
+....
+kubectl get storageclass
+....
+
+Install the NVIDIA deamoset if applicable. 
+
+....
+kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v1.11/nvidia-device-plugin.yml
+....
+
+
+The step is successful if you can see the GPUs (in P3 and G3 instances) when the following commands returns (please adapt for your environment)
+
+....
 kubectl get nodes \
  "-o=custom-columns=NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,EC2:.metadata.labels.beta\.kubernetes\.io/instance-type,AZ:.metadata.labels.failure-domain\.beta\.kubernetes\.io/zone
-```
+....
 
-=== Kubeflow installation
+== Kubeflow Deployment
+The prerequisite for kubeflow deployment is to have the ksonnet CLI (ks) installed in the client. Please install the binary ks version 0.13.1. 
+
 We follow the Kubeflow getting started guide: https://www.kubeflow.org/docs/started/getting-started/
 
-```
+....
 export KUBEFLOW_TAG=v0.3.3
 curl https://raw.githubusercontent.com/kubeflow/kubeflow/v0.3.3/scripts/download.sh | bash
-```
+....
 You will see the `kubeflow` and `scripts` directories created. 
 
 Then we decide the directory where we store all our apps as well as the name of the AI app that we would like to use - in our casde its `kf-eks-basic`. Change into the apps directory  and issue the following command:
 
-```
+....
 ~/projects/devops/kf/scripts/kfctl.sh init kf-eks-basic --platform none
-```
+....
 
 The new app directory`kf-eks-basic` will be created and it will contain an `env.sh` file that stores environment variables:
 
-```
+....
 PLATFORM=none
 KUBEFLOW_REPO=/Users/pantelis/projects/devops/kf
 KUBEFLOW_VERSION=master
@@ -62,19 +122,21 @@ KUBEFLOW_KS_DIR=/Users/pantelis/projects/devops/aws/kubeflow-eks-apps/kf-eks-bas
 KUBEFLOW_DOCKER_REGISTRY=
 K8S_NAMESPACE=kubeflow
 KUBEFLOW_CLOUD=null
-```
+....
+
 Then the generate command, creates the necessary for this deployment packages
 
-```
+....
 ~/projects/devops/kf/scripts/kfctl.sh generate k8s
-```
+....
 The subsequent apply command will deploy the components into pods in our kubernetes cluster. 
 
-```
+....
 ~/projects/devops/kf/scripts/kfctl.sh apply k8s
-```
+....
+
 We can check the deployment status by:
-```
+....
 kubectl get pods --all-namespaces
 NAMESPACE     NAME                                                      READY   STATUS              RESTARTS   AGE
 kube-system   aws-node-4czsl                                            1/1     Running             1          3h
@@ -102,7 +164,31 @@ kubeflow      vizier-suggestion-grid-76c648b78-hzn4q                    0/1     
 kubeflow      vizier-suggestion-hyperband-5df8cf7bc8-s24pp              0/1     ContainerCreating   0          41s
 kubeflow      vizier-suggestion-random-65b9fd7c48-pckc8                 1/1     Running             0          42s
 kubeflow      workflow-controller-59c7967f59-kjklr                      1/1     Running             0          5
+....
 
-```
+
+== Kubeflow Pipelines Deployment
+Per https://www.kubeflow.org/docs/guides/pipelines/deploy-pipelines-service/, 
 
 
+....
+PIPELINE_VERSION=0.1.2
+kubectl create -f https://storage.googleapis.com/ml-pipeline/release/$PIPELINE_VERSION/bootstrapper.yaml
+....
+
+By running kubectl get job, you should see a job created that deploys Kubeflow Pipelines along with all dependencies in the cluster. Wait for the number of successful job runs to reach 1. You may need to wait several minutes (e.g. 9min)
+
+....
+kubectl logs $(kubectl get pods -l job-name=deploy-ml-pipeline-qfpwg -o jsonpath='{.items[0].metadata.name}')
+....
+
+Replace the job-name above with the job name that is returned from the kubectl get jobs command.
+
+Do port forwarding to see the Kubeflow UI in your localhost. 
+
+....
+export NAMESPACE=kubeflow
+kubectl port-forward -n ${NAMESPACE} $(kubectl get pods -n ${NAMESPACE} --selector=service=ambassador -o jsonpath='{.items[0].metadata.name}') 8080:80
+....
+
+The kubeflow Pipelines UI is accessible in http://localhost:8080/pipeline/#/pipelines 
