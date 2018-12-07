@@ -19,6 +19,12 @@ eksctl create cluster eks-kubeflow --node-type=g3s.xlarge --nodes 2 --region us-
 
 The first command will launch very expensive (currently 3.5$/h) V100 GPUs available in P3 instances while the second will launch inexpensive (.75$/h) M60 GPU available in G3 instances.
 
+Install the NVIDIA deamoset if applicable. 
+
+....
+kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v1.11/nvidia-device-plugin.yml
+....
+
 === Cluster without CPU only
 
 ....
@@ -81,11 +87,7 @@ You can test is the PV is provisioned.
 kubectl get storageclass
 ....
 
-Install the NVIDIA deamoset if applicable. 
 
-....
-kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v1.11/nvidia-device-plugin.yml
-....
 
 
 The step is successful if you can see the GPUs (in P3 and G3 instances) when the following commands returns (please adapt for your environment)
