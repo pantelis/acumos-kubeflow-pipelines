@@ -1,0 +1,142 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: pets-object-detection-data-pipeline
+spec:
+  entrypoint: data-pipeline 
+  arguments: 
+    parameters:
+      - name: mountpath
+        value: "/nfs/pipeline"
+  volumes:
+  - name: pipeline-volume 
+    persistentVolumeClaim:
+      claimName: pipeline-pvc 
+  # This spec contains two templates: hello-hello-hello and whalesay
+  templates:
+  - name: data-pipeline 
+    # Instead of just running a container
+    # This template has a sequence of steps
+    steps:
+    - - name:  get-dataset           #get-data-job is run before the following steps
+        template: get-data 
+        arguments:
+          parameters:
+          - name: url
+            value: "http://www.robots.ox.ac.uk/~vgg/data/pets/data/images.tar.gz"
+          - name: mountpath
+            value: "/nfs/pipeline"
+      - name:  get-annotations           #get-data-job is run before the following steps
+        template: get-data 
+        arguments:
+          parameters:
+          - name: url
+            value: "http://www.robots.ox.ac.uk/~vgg/data/pets/data/annotations.tar.gz"
+          - name: mountpath
+            value: "/nfs/pipeline"
+      - name:  get-model           #get-data-job is run before the following steps
+        template: get-data 
+        arguments:
+          parameters:
+          - name: url
+            value: "http://download.tensorflow.org/models/object_detection/faster_rcnn_resnet101_coco_2018_01_28.tar.gz"
+          - name: mountpath
+            value: "/nfs/pipeline"
+      - name:  get-config           #get-data-job is run before the following steps
+        template: get-data-no-cert 
+        arguments:
+          parameters:
+          - name: url
+            value: "https://raw.githubusercontent.com/kubeflow/examples/master/object_detection/conf/faster_rcnn_resnet101_pets.config"
+          - name: mountpath
+            value: "/nfs/pipeline"
+    - - name: decompress-dataset          #double dash => run after previous step
+        template: decompress-data 
+        arguments:
+          parameters:
+          - name: pathtofile 
+            value: '{{workflow.parameters.mountpath}}/images.tar.gz'
+      - name: decompress-annotations          #double dash => run after previous step
+        template: decompress-data 
+        arguments:
+          parameters:
+          - name: pathtofile 
+            value: '{{workflow.parameters.mountpath}}/annotations.tar.gz'
+      - name: decompress-model          #double dash => run after previous step
+        template: decompress-data 
+        arguments:
+          parameters:
+          - name: pathtofile 
+            value: '{{workflow.parameters.mountpath}}/faster_rcnn_resnet101_coco_2018_01_28.tar.gz'
+    - - name: create-tf-record-job           
+        template: tf-record 
+
+  # This is the same template as from the previous example
+  - name: whalesay
+    inputs:
+      parameters:
+      - name: message
+    container:
+      image: docker/whalesay
+      command: [cowsay]
+      args: ["{{inputs.parameters.message}}"]
+  - name: get-data 
+    inputs:
+      parameters:
+      - name: url 
+      - name: mountpath 
+    container:
+      image: inutano/wget
+      imagePullPolicy: IfNotPresent
+      #command: ["wget", "http://www.robots.ox.ac.uk/~vgg/data/pets/data/images.tar.gz","-P","/nfs/pipeline"]
+      command: ["wget",'{{inputs.parameters.url}}',"-P",'{{inputs.parameters.mountpath}}']
+      env:
+      - name: http_proxy
+        value: "http://proxy.lbs.alcatel-lucent.com:8000"      
+      - name: https_proxy
+        value: "http://proxy.lbs.alcatel-lucent.com:8000"
+      volumeMounts:        #same syntax as k8s Pod spec
+      - name: pipeline-volume 
+        #mountPath: "/nfs/pipeline"
+        mountPath: '{{inputs.parameters.mountpath}}'
+  - name: get-data-no-cert 
+    inputs:
+      parameters:
+      - name: url 
+      - name: mountpath 
+    container:
+      image: inutano/wget
+      imagePullPolicy: IfNotPresent
+      command: ["wget",'{{inputs.parameters.url}}',"--no-check-certificate","-P",'{{inputs.parameters.mountpath}}']
+      env:
+      - name: http_proxy
+        value: "http://proxy.lbs.alcatel-lucent.com:8000"      
+      - name: https_proxy
+        value: "http://proxy.lbs.alcatel-lucent.com:8000"
+      volumeMounts:        #same syntax as k8s Pod spec
+      - name: pipeline-volume 
+        #mountPath: "/nfs/pipeline"
+        mountPath: '{{inputs.parameters.mountpath}}'
+  - name: decompress-data 
+    inputs:
+      parameters:
+      - name: pathtofile
+    container:
+      image: ubuntu:16.04 
+      imagePullPolicy: IfNotPresent
+      command: ["tar","--no-same-owner","-xzvf",'{{inputs.parameters.pathtofile}}',"-C",'{{workflow.parameters.mountpath}}']
+      volumeMounts:        #same syntax as k8s Pod spec
+      - name: pipeline-volume 
+        #mountPath: "/nfs/pipeline"
+        mountPath: '{{workflow.parameters.mountpath}}'
+  - name: tf-record 
+    container:
+      image: "lcastell/pets_object_detection" 
+      imagePullPolicy: IfNotPresent
+      command: ["python", "/models/research/object_detection/dataset_tools/create_pet_tf_record.py", "--label_map_path=/models/research/object_detection/data/pet_label_map.pbtxt", "--data_dir={{workflow.parameters.mountpath}}", "--output_dir={{workflow.parameters.mountpath}}"]
+      volumeMounts:        #same syntax as k8s Pod spec
+      - name: pipeline-volume 
+        #mountPath: "/nfs/pipeline"
+        mountPath: '{{workflow.parameters.mountpath}}'
+
+   # restartPolicy: Never
